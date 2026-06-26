@@ -1,0 +1,3 @@
+#!/bin/bash
+mycode=/work2/02248/alexsund/maverick2/musikal/genrivernet.py
+python $mycode --config config_houston.yaml 

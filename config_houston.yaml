@@ -1,0 +1,56 @@
+seed: 4121046
+rootdir:  '/work/02248/alexsund/maverick2/musikal'              #project folder
+nhdplusdbroot: '/work/02248/alexsund/maverick2/nwm/nhdplusdb'   #nhdplusDB
+watershed_name: 'houston' 
+
+network:
+  compare_to_usgs: False    #true to compare to usgs record; default False
+  connect_usgsgage: False   #true to attach usgs gage to comid set for fpp watersheds; default False
+  compare_to_prms: False    #this tag is obsolete, should always be false
+  cutoffstattype: 1         #network cutoff statistics, 1 based on median flow at each node, 2 based on min flow 
+  plotadj:  False           #true to visualize the adj mat
+  weighted_adj: False       #true to generate weight adj mat; false undirected
+  directed_adj: False       #false to use undirected adj mat
+  connect_exta_path: False  #this should always be false
+
+data:
+  seq_length: 30 
+  addstatics: False         #true to add static data; 
+  addnwm: True              #true to add antecedent nwm as predictors (i.e., auto-regress) 
+  uselog: True              #true to do log transform on streamflow data
+  forcing_source: "aorc"    #met forcing data source
+  nwm_ver: '2.0'            #'2.0'
+  interval: '24H'           #data aggregation interval, 24H or 3H
+  uselabel: False           #this should always be False
+  holdoutcomid: 1440385
+  reload_usgs: False        #reload usgs data from their website
+
+gwnet_params:
+    adjtype: 'transition'   # adj type
+    gcn_bool:   True        # true to add graph convolution layer
+    aptonly:    False       # true to learn adj
+    addaptadj:  False       # true to use use user adj mat +  adaptive adj [this is the default]
+    randomadj:  True        # whether random initialize adaptive adj
+    apt_size:   20          #
+    nhid:       32          # hidden channel size
+    in_dim:      3          # inputs dimension. if use aorc:  3; nldas: 6; daymet: 6
+
+train_params:
+    retrain: True           #true to retrain
+    nepoch:  30             #num of epochs for training
+    batch_size: 30          #type=int,default=30,help='batch size')
+    dropout: 0.3            #type=float,default=0.3,help='dropout rate')
+    weight_decay: 1.0e-5    #type=float,default=0.0001,help='weight decay rate')
+    L1Loss: True            #True to use l1 loss
+    print_every: 50         #type=int,default=50,help='')
+    clipnorm:  3.0          #type=float, default=3.0, help="clip norm")
+    learnrate: 5.0e-4
+    retune: False           #true to do fine-tuning, not working in this repo
+
+fine_tune:
+    lambdawt: 1.0
+    tune_omega: False
+    omega: 1500
+    omega_hi: 3000
+    omega_lo: 50
+    modeltag: 'gwnet'

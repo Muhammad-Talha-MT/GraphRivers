@@ -1,0 +1,2 @@
+#!/bin/bash
+python trainwavenetwu_hourly.py --config config_houston.yaml 
