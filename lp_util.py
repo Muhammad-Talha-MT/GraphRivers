@@ -7,8 +7,6 @@ import torch
 import torch.nn.functional as F
 import os
 
-from torch_sparse import SparseTensor
-from torch_geometric.utils import to_undirected
 import numpy as np
 import random
 
@@ -22,7 +20,7 @@ import matplotlib.pyplot as plt
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-class OrderedSet(collections.Set):
+class OrderedSet(collections.abc.Set):
     def __init__(self, iterable=()):
         self.d = collections.OrderedDict.fromkeys(iterable)
 

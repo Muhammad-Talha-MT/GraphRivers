@@ -906,7 +906,7 @@ def loadNetwork(watershed,plotting=False,compareToUSGS=False,PRMSToUSGS=False,db
     
     #generate centroids of reach segments [daymet only works for daily!!!]
     #assert(agg_interval=='24H')
-    assert(forcingType in ['AORC', 'NLDAS', 'Daymet'])
+    assert(forcingType in ['AORC', 'NLDAS', 'Daymet', 'ERA5'])
     if forcingType == 'NLDAS':
         if not os.path.exists('data/{0}/nldasforcing{1}_nwm{2}_{3}.pkl'.format(watershed, len(comIDset), nwm_ver, agg_interval)):
             print ('Getting NLDAS data for NWM', nwm_ver)

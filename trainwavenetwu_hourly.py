@@ -54,7 +54,9 @@ def getDataLoaders(watershed,in_dim, batchsize,seq,comIDSet,forcingDF,allDF,outp
     trainDataset,valDataset,testDataset,nfeatures = \
         genMLDataSetsWithForcing(watershed,in_dim,comIDSet,forcingDF,allDF,seq,outputdir,trainRatio=(0.7,0.15),
         logTran=uselog,addStatics=addstatics,addNWM=addnwm,removeSWE=removeSWE, 
-        useCustomDataset=True)
+        useCustomDataset=True,
+        trainEndDate='2010-12-31',
+        valEndDate='2015-12-31')
 
     trainLoader = DataLoader(trainDataset, batch_size=batchsize, shuffle=True, drop_last=True,num_workers=4)
     valLoader = DataLoader(valDataset, batch_size=batchsize, shuffle=False, drop_last=True,num_workers=4)

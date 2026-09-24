@@ -136,6 +136,18 @@ class Houston(Watershed):
         self.gageIDset =  ['08075000', '08075730', '08075770', '08072730', '08073500', '08073600', '08076000'] #usgs gageid        
         self.obsComIDset = [1440385,   1440389, 1440277, 1440237, 1439317, 1439357, 1440183]    #FLComID in gageloc.shp 
         
+
+class FrenchBroad(Watershed):
+    def __init__(self, watershed, rootdir, shpfilename, gagelocfile, basinboundfile=None):
+        super(FrenchBroad, self).__init__(watershed, rootdir, shpfilename, gagelocfile)
+        self.comIDColName = 'comid'
+        self.removebadnode = True
+        self.prettyName = 'French Broad'
+        self.cutoffq = -0.01
+        self.shpbasinbound = basinboundfile
+        self.gageIDset = ['0344894205', '03453000', '03450000', '03451000', '03453500', '03451500', '03455000', '03447687', '03446000', '03443000', '03441000', '03439000']
+        self.obsComIDset = [22160778, 22161598, 22161670, 22161688, 22161966, 22162094, 22162876, 22163560, 22163718, 22164302, 22164500, 22165090]
+
 class LowerSabine(Watershed):
     def __init__(self, watershed, rootdir, shpfilename, gagelocfile,basinboundfile=None):
         super(LowerSabine, self).__init__(watershed, rootdir, shpfilename, gagelocfile)
@@ -251,6 +263,12 @@ def loadWatershed(args, reGen=False, returnWobj=False):
         #checkUSGSGauge(os.path.join(rootdir, gagelocfile))
         #comment the following out when using checkUSGSGauge in the above
         wobj = LowerSabine('lowersabine',rootdir,flowlinefile,gagelocfile,basinboundfile=basinboundfile)  
+    elif watershed == 'frenchbroad':
+        rootdir = '/'.join([basedir, 'data/frenchbroad'])
+        flowlinefile = "frenchbroad_flowline_placeholder.shp"
+        gagelocfile = "frenchbroad_gageloc_placeholder.shp"
+        wobj = FrenchBroad('frenchbroad',rootdir,flowlinefile,gagelocfile,basinboundfile=None)
+
     else:
         raise NotImplementedError
     if returnWobj:

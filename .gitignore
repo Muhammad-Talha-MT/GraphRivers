@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+
+# generated data (pickles, forcing, network files) -- rebuilt by
+# prep_frenchbroad_from_cache.py and build_usgs_pkl.py, not source code
+data/
+
+# training logs and saved model checkpoints
+logs/
+models/
+outputs/
+
+# one-off patch scripts used to develop this branch interactively --
+# their changes are already applied to the tracked .py files below;
+# keeping them here would just be noise. Remove this block if you'd
+# rather keep them as a record of what was patched and why.
+patch_*.py

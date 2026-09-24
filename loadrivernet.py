@@ -183,7 +183,9 @@ def genMLDataSetsWithForcing(watershed,in_dim,comIDSet,forcingDFDict,allDF,noffs
         allDF_obs=None, 
         dumping=False, 
         useCustomDataset=False,
-        removeSWE=False):   
+        removeSWE=False,
+        trainEndDate=None,
+        valEndDate=None):   
     """Assemble dataset for GNN training/testing
 
     Parameters
@@ -227,13 +229,19 @@ def genMLDataSetsWithForcing(watershed,in_dim,comIDSet,forcingDFDict,allDF,noffs
     
     #split time period into training and validation periods
     #@todo: maybe a random split is more reasonable?
-    trainLen = int(trainRatio[0]*allDF.shape[0])
-    valLen   = int(trainRatio[1]*allDF.shape[0])
+    if trainEndDate is not None and valEndDate is not None:
+        #explicit date-based split, overrides trainRatio
+        trainLen = allDF.index.searchsorted(pd.Timestamp(trainEndDate)) + 1
+        valEnd   = allDF.index.searchsorted(pd.Timestamp(valEndDate)) + 1
+        valLen   = valEnd - trainLen
+        print(f'date-based split: train ends {allDF.index[trainLen-1].date()} ({trainLen} days), '
+              f'val ends {allDF.index[valEnd-1].date()} ({valLen} days), '
+              f'test is remaining {allDF.shape[0]-valEnd} days')
+    else:
+        trainLen = int(trainRatio[0]*allDF.shape[0])
+        valLen   = int(trainRatio[1]*allDF.shape[0])
     
     myscaler = getStandardScaler(forcingDFDict,allDF,trainLen,logTran)
-    Xtrain_list = []; ytrain_list = []
-    Xval_list = []; yval_list = []
-    Xtest_list = []; ytest_list = []
     starttime= default_timer()
     if addStatics:
         staticarr = pkl.load(open('data/{0}/staticdata.pkl'.format(watershed), 'rb'))
@@ -271,15 +279,44 @@ def genMLDataSetsWithForcing(watershed,in_dim,comIDSet,forcingDFDict,allDF,noffs
         outNorm[comID] = outmat[:, ix] #a vector
         outNorm_obs[comID] = outmat_obs[:,ix] #a vector
 
+    #==== MEMORY FIX: preallocate final arrays instead of Python lists + np.asarray ====
+    #(the previous approach built per-day arrays in Python lists, then called np.asarray()
+    # at the end, which briefly holds BOTH the list and the new array in memory at once --
+    # roughly doubling peak memory. Preallocating and writing by index avoids that.)
+    n_train = max(0, trainLen - noffset)
+    n_val   = valLen
+    n_test  = allDF.shape[0] - trainLen - valLen
+    nnodes  = allDF.shape[1]
+    print(f'preallocating tensors: train={n_train} val={n_val} test={n_test} '
+          f'(nodes={nnodes}, nfeatures={nfeatures}, seq={noffset})')
+
+    Xtrain = np.zeros((n_train, noffset, nnodes, nfeatures), dtype=np.float32)
+    ytrain = np.zeros((n_train, nnodes), dtype=np.float32)
+    Xval   = np.zeros((n_val,   noffset, nnodes, nfeatures), dtype=np.float32)
+    yval   = np.zeros((n_val,   nnodes), dtype=np.float32)
+    Xtest  = np.zeros((n_test,  noffset, nnodes, nfeatures), dtype=np.float32)
+    ytest  = np.zeros((n_test,  nnodes), dtype=np.float32)
+
+    i_train = i_val = i_test = 0
     #iterate through time steps 
     # daymet: 'prcp (mm/day)', 'srad (W/m^2)', 'swe (kg/m^2)', 'tmax (deg c)', 'tmin (deg c)', 'vp (Pa)'
     # nldas: 'apcpsfc (kg/m^2)', 'dlwrfsfc (W/m^2)', 'dswrfsfc (W/m^2)', 'spfh2m (kg/kg)', 'tmp2m (K)'
     # aorc:  'apcpsfc (kg/m^2)' 'tmp2m (K)' see https://hydrology.nws.noaa.gov/aorc-historic/Documents/AORC-Version1.1-SourcesMethodsandVerifications.pdf
     # note kg/m^2 == mm
     for irow in range(noffset, allDF.shape[0]):            
-        #featureMat shape: [seq, nBasins,nfeatures]
-        featureMat = np.zeros((noffset,allDF.shape[1],nfeatures))
-        targetvec  = np.zeros((allDF.shape[1]))
+        if irow<trainLen:
+            featureMat = Xtrain[i_train]
+            targetvec  = ytrain[i_train]
+            i_train += 1
+        elif irow<trainLen+valLen:
+            featureMat = Xval[i_val]
+            targetvec  = yval[i_val]
+            i_val += 1
+        else:
+            featureMat = Xtest[i_test]
+            targetvec  = ytest[i_test]
+            i_test += 1
+
         for inode,comID in enumerate(comIDSet):                
             if addStatics:
                 if addNWM:
@@ -299,16 +336,6 @@ def genMLDataSetsWithForcing(watershed,in_dim,comIDSet,forcingDFDict,allDF,noffs
             #form target vector, size=[nnode]
             targetvec[inode] = outNorm_obs[comID][irow]
 
-        if irow<trainLen: 
-            Xtrain_list.append(featureMat)
-            ytrain_list.append(targetvec)
-        elif irow<trainLen+valLen:
-            Xval_list.append(featureMat)
-            yval_list.append(targetvec)
-        else:
-            Xtest_list.append(featureMat)
-            ytest_list.append(targetvec)
-
     print ('Time taken to form input data', default_timer()-starttime)
     if logTran:
         saved_file = os.path.join(outputdir, 'mldataf_log.pkl')
@@ -319,20 +346,20 @@ def genMLDataSetsWithForcing(watershed,in_dim,comIDSet,forcingDFDict,allDF,noffs
     pkl.dump(myscaler, open(f'{outputdir}/{outscalername}', 'wb'))
     if dumping:
         #save the data
-        pkl.dump([Xtrain_list,ytrain_list,Xval_list,yval_list,Xtest_list,ytest_list], open(saved_file, 'wb'))
+        pkl.dump([Xtrain,ytrain,Xval,yval,Xtest,ytest], open(saved_file, 'wb'))
     
     ##format train/val/test datasets
     #training
-    Xin = toTensor(np.asarray(Xtrain_list),dtype=torch.float32)
-    y  =  toTensor(np.asarray(ytrain_list),dtype=torch.float32)
+    Xin = torch.from_numpy(Xtrain)
+    y  =  torch.from_numpy(ytrain)
     print ('train data shape', Xin.shape, y.shape)
     if useCustomDataset:
         trainDataset = MyTensorDataset(Xin,y)
     else:
         trainDataset = TensorDataset(Xin,y)
     #validation
-    Xin = toTensor(np.asarray(Xval_list),dtype=torch.float32)
-    y  =  toTensor(np.asarray(yval_list),dtype=torch.float32)
+    Xin = torch.from_numpy(Xval)
+    y  =  torch.from_numpy(yval)
     if useCustomDataset:
         valDataset = MyTensorDataset(Xin,y)
     else:
@@ -340,8 +367,8 @@ def genMLDataSetsWithForcing(watershed,in_dim,comIDSet,forcingDFDict,allDF,noffs
     print ('val data shape', Xin.shape, y.shape)
 
     #testing
-    Xin = toTensor(np.asarray(Xtest_list),dtype=torch.float32)
-    y  =  toTensor(np.asarray(ytest_list),dtype=torch.float32)
+    Xin = torch.from_numpy(Xtest)
+    y  =  torch.from_numpy(ytest)
     if useCustomDataset:
         testDataset = MyTensorDataset(Xin,y)
     else:
@@ -458,16 +485,35 @@ def main():
         forcingDF = pkl.load(open('data/{0}/aorcforcing{1}_nwm{2}_{3}.pkl'.format(watershed, len(comIDset), args.data.nwm_ver, args.data.interval),'rb'))
         in_dim = 3 #for aorc (2 forcing vars + Q)
         removeSWE = False
+    elif args.data.forcing_source in ['era5', 'ERA5']:
+        forcingDF = pkl.load(open('data/{0}/era5forcing_full_nwm{1}_{2}.pkl'.format(watershed, args.data.nwm_ver, args.data.interval),'rb'))
+        in_dim = 9  # 8 ERA5 vars + Q
+        removeSWE = False
     else:
         raise ValueError("Invalid forcing source ")
     
+    #align allDF's date range to match the forcing data's actual coverage
+    #(streamflow and forcing pickles were built from different source-year ranges,
+    # so row i in allDF is not guaranteed to be the same date as row i in forcingDF)
+    _sample_comid = next(iter(forcingDF.keys()))
+    _forcing_start = forcingDF[_sample_comid].index.min()
+    _forcing_end   = forcingDF[_sample_comid].index.max()
+    print(f'forcing date range: {_forcing_start.date()} to {_forcing_end.date()}')
+    print(f'allDF date range before align: {allDF.index.min().date()} to {allDF.index.max().date()} ({allDF.shape[0]} days)')
+    allDF = allDF.loc[_forcing_start:_forcing_end]
+    print(f'allDF date range after align:  {allDF.index.min().date()} to {allDF.index.max().date()} ({allDF.shape[0]} days)')
+    for _c in comIDset:
+        assert len(forcingDF[_c]) == allDF.shape[0], f'row count mismatch for comid {_c}: forcing={len(forcingDF[_c])} allDF={allDF.shape[0]}'
+
     #========Generate datasets ====================
     genMLDataSetsWithForcing(watershed,in_dim,comIDset,forcingDF,allDF,noffset,outputdir,
             trainRatio=(0.7,0.15),
             logTran=args.data.uselog,
             addStatics=args.data.addstatics,
             addNWM=args.data.addnwm,
-            removeSWE= removeSWE)    
+            removeSWE= removeSWE,
+            trainEndDate='2010-12-31',
+            valEndDate='2015-12-31')
 
 
 if __name__ == '__main__':

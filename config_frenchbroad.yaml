@@ -1,0 +1,57 @@
+seed: 4121046
+rootdir: '/ocean/projects/ees250003p/mtalha1/GraphRivers'     # paste output of: echo $PROJECT/GraphRivers  (YAML does not expand $PROJECT)
+nhdplusdbroot: '/ocean/projects/YOURGROUP/YOURUSER/nhdplusdb'  # unused now -- adjinfo2.1.pkl is pre-built by prep_frenchbroad_from_cache.py
+watershed_name: 'frenchbroad'
+
+network:
+  compare_to_usgs: False
+  connect_usgsgage: False
+  compare_to_prms: False
+  cutoffstattype: 1        # 1 = trim nodes by median flow
+  plotadj: False
+  weighted_adj: False
+  directed_adj: False
+  connect_exta_path: False
+
+data:
+  seq_length: 30
+  addstatics: False
+  addnwm: True             # antecedent NWM flow as predictor (paper setup)
+  uselog: True
+  forcing_source: "ERA5"   # matches era5forcing*.pkl written by prep_frenchbroad_from_cache.py
+  nwm_ver: '2.1'           # matches adjinfo2.1.pkl / nwmdfv21_24H.pkl written by the converter
+  interval: '24H'
+  uselabel: False
+  holdoutcomid: 22165090   # USGS 03439000, French Broad outlet, full record
+  reload_usgs: False       # usgs_data_dv.pkl built from cached nwis_iv, no network needed
+
+gwnet_params:
+  adjtype: 'transition'
+  gcn_bool: True
+  aptonly: False
+  addaptadj: False
+  randomadj: True
+  apt_size: 20
+  nhid: 32
+  in_dim: 9                # ERA5-Land: 8 forcing vars + NWM Q
+
+train_params:
+  retrain: True
+  nepoch: 60               # paper used 60 epochs for pretraining
+  batch_size: 30
+  dropout: 0.3
+  weight_decay: 1.0e-5
+  L1Loss: True
+  print_every: 50
+  clipnorm: 3.0
+  learnrate: 5.0e-4
+  retune: False
+
+fine_tune:
+  lambdawt: 1.0
+  tune_omega: False
+  omega: 1500
+  omega_hi: 3000
+  omega_lo: 50
+
+modeltag: 'gwnet'
