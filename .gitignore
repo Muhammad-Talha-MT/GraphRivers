@@ -15,3 +15,6 @@ outputs/
 # keeping them here would just be noise. Remove this block if you'd
 # rather keep them as a record of what was patched and why.
 patch_*.py
+
+# training/eval run logs left at repo root (not under logs/)
+*.log

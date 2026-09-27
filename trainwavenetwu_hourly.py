@@ -100,13 +100,23 @@ def trainEpoch(model,optimizer,loader,criterion,epochno,args,**kwargs):
     pbar = tqdm.tqdm(loader, file=sys.stdout)
     pbar.set_description(f'# Epoch {epochno}')
 
+    import os as _os
+    _debug_max_batches = int(_os.environ.get('DEBUG_MAX_BATCHES', 0))
+    _batch_count = 0
+
     for (x,y),indx in pbar: 
+        _batch_count += 1
+        if _debug_max_batches > 0 and _batch_count > _debug_max_batches:
+            print(f'DEBUG: stopping after {_debug_max_batches} batches')
+            break
         x=x.to(device)     
         y=y.to(device)           #(batch, nnode)    
+
         model.zero_grad()        
         out = model(x).squeeze() #(batch, nnode)
         
         loss = getLoss(args,out,y,criterion,**kwargs)
+
         l_sum +=loss.item()
         n+=out.shape[0]
         loss.backward()  
@@ -396,9 +406,9 @@ def doCompareNWM_ML_USGS(args,comIDdict,gageDict,usgsDict,nwmMat,mlMat,allDF,mod
         data = {'USGS': dfUSGS.values.squeeze(), 'NWM':df_NWM.values.squeeze(),'ML':df_ML.values.squeeze()}
         dfQ = pd.DataFrame(data, index=dfUSGS.index)
         
-        ax.plot_date(dfQ.index, dfQ['USGS'], '-', xdate=True, color='gray', alpha=0.7,label='Obs')
-        ax.plot_date(dfQ.index, dfQ['NWM'],'-', xdate=True, color='coral', label='NWM')
-        ax.plot_date(dfQ.index, dfQ['ML'],'-', xdate=True, color='blue', label='ML')
+        ax.plot(dfQ.index, dfQ['USGS'], '-', color='gray', alpha=0.7,label='Obs')
+        ax.plot(dfQ.index, dfQ['NWM'],'-', color='coral', label='NWM')
+        ax.plot(dfQ.index, dfQ['ML'],'-', color='blue', label='ML')
         #ax.set_yscale("log")  
         ax.set_xlabel('Date')
         ax.set_ylabel('Q (m3/s)')
@@ -654,6 +664,9 @@ def main():
         removeSWE = False
     elif args.data.forcing_source in ['aorc', 'AORC']:
         forcingDF = pkl.load(open('data/{0}/aorcforcing{1}_nwm{2}_{3}.pkl'.format(args.watershed_name,nnode, args.data.nwm_ver, args.data.interval),'rb'))    
+        removeSWE = False
+    elif args.data.forcing_source in ['era5', 'ERA5']:
+        forcingDF = pkl.load(open('data/{0}/era5forcing_full_nwm{1}_{2}.pkl'.format(args.watershed_name, args.data.nwm_ver, args.data.interval),'rb'))
         removeSWE = False
     else:
         raise ValueError("invalid forcing source")

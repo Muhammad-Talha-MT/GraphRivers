@@ -53,7 +53,7 @@ class Optim(object):
             raise RuntimeError("Invalid optim method: " + self.method)
 
     def __init__(self, params, method, lr, clip, lr_decay=1, start_decay_at=None):
-        self.params = params  # careful: params may be a generator
+        self.params = list(params)  # fix: materialize generator so it can be reused for grad clipping
         self.last_ppl = None
         self.lr = lr
         self.clip = clip

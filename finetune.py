@@ -30,27 +30,42 @@ def extractGageData(usgsDict,gageDict,comIDdict):
     qmat, streamflow data
     colIDs, column ID
     """
-    #Loop through comID of usgs gages
+    #FIX: build an explicit, controlled daily date range and reindex every
+    #gage onto it directly, rather than relying on pd.concat's automatic
+    #outer-join index union. Some pandas versions (observed: 3.0.6 with
+    #datetime64[us, UTC] indices) can silently fabricate spurious out-of-range
+    #index entries during outer-join concat -- explicit reindexing avoids this
+    #entirely since we fully control the target index ourselves.
     colIDs = []
-    allDF = [] 
-    #note: colIDs should be sorted in ascending order
+    series_list = []
+    global_min, global_max = None, None
     for item in gageDict.keys():
         usgsid = gageDict[item]
-        print (f'comid {item}, usgsid {usgsid}, col id {comIDdict[item]}')
-        dfQ = usgsDict[usgsid]['Q']     
-        print (f'Length of usgs record for {usgsid}: {dfQ.shape[0]}')      
-        #convert timestamp to date
-        #dfQ.index = pd.to_datetime(dfQ.index,format='%Y-%m-%d',utc=True)
-        dfQ.index = pd.to_datetime(dfQ.index)
-        #dfQ.fillna(inplace=True, method='bfill')  
+        dfQ = usgsDict[usgsid]['Q'].copy()
+        dfQ.index = pd.to_datetime(dfQ.index, utc=True).tz_localize(None)
+        dfQ.name = comIDdict[item]  # FIX: name each series by its column ID so concat produces uniquely-named columns, not 12 duplicate 'Q' columns
+        print(f'comid {item}, usgsid {usgsid}, col id {comIDdict[item]}, raw records {dfQ.shape[0]}')
         colIDs.append(comIDdict[item])
-        allDF.append(dfQ)
-    allDF = pd.concat(allDF,axis=1, join='outer')
-    #allDF may have Nan!!!!!    
-    allDF.fillna(inplace=True, method='bfill')  
+        series_list.append((item, usgsid, dfQ))
+        gmin, gmax = dfQ.index.min(), dfQ.index.max()
+        global_min = gmin if global_min is None else min(global_min, gmin)
+        global_max = gmax if global_max is None else max(global_max, gmax)
+
+    canonical_index = pd.date_range(start=global_min, end=global_max, freq='D')
+    print(f'Canonical USGS index: {canonical_index.min()} to {canonical_index.max()} ({len(canonical_index)} days)')
+
+    reindexed = []
+    for item, usgsid, dfQ in series_list:
+        dfQ_reindexed = dfQ.reindex(canonical_index)
+        reindexed.append(dfQ_reindexed)
+
+    allDF = pd.concat(reindexed, axis=1, join='outer')
+    assert allDF.index.max() == global_max, f'index corruption still present: max={allDF.index.max()}, expected={global_max}'
+    assert allDF.index.min() == global_min, f'index corruption still present: min={allDF.index.min()}, expected={global_min}'
+    allDF.ffill(inplace=True)
+    allDF.bfill(inplace=True)
     print ('allDF shape', allDF.shape)
-    #test nan
-    print ('nan values', np.where(np.isnan(allDF.values))[0])
+    print ('nan values remaining', np.where(np.isnan(allDF.values))[0].shape[0])
     return allDF,colIDs
 
 def disaggregateDaily2Hourly(allUSGSQDF, forcingDF, colIDs, freq=3):
@@ -61,47 +76,94 @@ def disaggregateDaily2Hourly(allUSGSQDF, forcingDF, colIDs, freq=3):
         df = forcingDF.iloc[i*N:(i+1)*N, colIDs]
         print (df)
 
-def getLoss(out,criterion,usgsMat,colIDs,indx):
-    #calculate loss only at observation locations 
-    loss = criterion(out[:,colIDs], usgsMat[indx,:])       
-    return loss
-
 def finetune(args,model,model_prefix,trainLoader,valLoader,A,save_path,usgsDict, gageDict,comIDdict, basestr, reTrain=False, **kwargs):
     """Main code for fine tuning
     """
+    from loadrivernet import loadNWMDF
+
     usgsMatO,colIDs = extractGageData(usgsDict,gageDict,comIDdict)
 
-    num_nodes = A.shape[0]    
-    nEpoch = args.nepoch
-    lr = args.learnrate #this needs to be a small learning rate
-    seq = args.seq_length
-    usefinal = args.usefinal
-    uselog = args.uselog
+    num_nodes = A.shape[0]
+    nEpoch = args.fine_tune.nepoch
+    lr = args.fine_tune.learnrate #this needs to be a small learning rate
+    seq = args.data.seq_length
+    usefinal = args.train_params.get("usefinal", False)
+    uselog = args.data.uselog
+    noffset = seq
+
+    #FIX: independently rebuild the exact same trimmed date range and
+    #train/val split that genMLDataSetsWithForcing used, so usgsMatO can
+    #be aligned by DATE rather than assumed to align by ROW POSITION.
+    #NOTE: these two date strings MUST match the trainEndDate/valEndDate
+    #arguments passed to getDataLoaders() in trainwavenetwu_hourly.py.
+    TRAIN_END_DATE = '2010-12-31'
+    VAL_END_DATE = '2015-12-31'
+
+    print('Recomputing trimmed date range for fine-tune alignment...')
+    _, _, allDF_ft, _, _ = loadNWMDF(args)
+    if args.data.forcing_source in ['era5','ERA5']:
+        forcingDF_ft = pkl.load(open('data/{0}/era5forcing_full_nwm{1}_{2}.pkl'.format(
+            args.watershed_name, args.data.nwm_ver, args.data.interval), 'rb'))
+    else:
+        raise NotImplementedError('finetune date-alignment currently only implemented for ERA5 forcing_source')
+    sample_comid_ft = list(forcingDF_ft.keys())[0]
+    forcing_index_ft = forcingDF_ft[sample_comid_ft].index
+    common_start_ft = max(allDF_ft.index.min(), forcing_index_ft.min())
+    common_end_ft = min(allDF_ft.index.max(), forcing_index_ft.max())
+    allDF_trimmed_ft = allDF_ft.loc[common_start_ft:common_end_ft]
+    del forcingDF_ft  # free ~1.5GB promptly, only needed the index
+
+    trainLen = allDF_trimmed_ft.index.searchsorted(pd.Timestamp(TRAIN_END_DATE)) + 1
+    valEnd   = allDF_trimmed_ft.index.searchsorted(pd.Timestamp(VAL_END_DATE)) + 1
+    valLen   = valEnd - trainLen
+    print(f'Fine-tune alignment: trimmed range {common_start_ft} to {common_end_ft} '
+          f'({allDF_trimmed_ft.shape[0]} rows), trainLen={trainLen}, valLen={valLen}')
+
+    n_train = len(trainLoader.dataset)
+    n_val = len(valLoader.dataset)
+    assert n_train == trainLen - noffset, \
+        f'train split mismatch: loader has {n_train} samples, expected {trainLen-noffset}. ' \
+        f'TRAIN_END_DATE/VAL_END_DATE in finetune.py may be out of sync with trainwavenetwu_hourly.py.'
+    assert n_val == valLen, \
+        f'val split mismatch: loader has {n_val} samples, expected {valLen}. ' \
+        f'TRAIN_END_DATE/VAL_END_DATE in finetune.py may be out of sync with trainwavenetwu_hourly.py.'
+
+    #reindex USGS observations onto the exact trimmed date grid.
+    #dates with no real observation (e.g. before any gage's period of record)
+    #become NaN here -- deliberately NOT filled, so the loss can mask them out
+    #rather than fine-tuning against fabricated values.
+    usgsMatO_aligned = usgsMatO.reindex(allDF_trimmed_ft.index)
+    n_valid_total = usgsMatO_aligned.notna().sum().sum()
+    n_total_cells = usgsMatO_aligned.shape[0] * usgsMatO_aligned.shape[1]
+    print(f'USGS coverage over trimmed range: {n_valid_total}/{n_total_cells} cells have real observations '
+          f'({100*n_valid_total/n_total_cells:.1f}%)')
 
     #need to transform the data
     if uselog:
-        myscaler = pkl.load(open(f'data/{args.watershed_name}/myscaler_log.pkl', 'rb'))  
+        myscaler = pkl.load(open(f'data/{args.watershed_name}/myscaler_log.pkl', 'rb'))
     else:
-        myscaler = pkl.load(open(f'data/{args.watershed_name}/myscaler.pkl', 'rb'))  
+        myscaler = pkl.load(open(f'data/{args.watershed_name}/myscaler.pkl', 'rb'))
 
-    #need to fake other features to use the scaler
-    augDimension = num_nodes
-    augmat = np.random.randn(usgsMatO.shape[0], augDimension)
-    
-    #replace at the column locations using observed usgs dta
-    augmat[:,colIDs] = usgsMatO
-
-    #Do data normalization using saved scalers from the pretrained model
+    #FIX: this pipeline's scaler is a simple elementwise log/z-score transform
+    #(myscaler has input_means/stds, output_mean/std, q_scale -- NOT a fitted
+    #sklearn PowerTransformer). Apply the exact same per-column formula
+    #getStandardScaler() uses for streamflow, directly to the USGS values.
+    #NaN passes through both formulas untouched (log(nan)=nan, (nan-x)/y=nan),
+    #so masking in getLoss() still works correctly downstream.
+    usgs_vals = usgsMatO_aligned.values  # (n_trimmed_rows, n_gages), real units (m3/s)
     if uselog:
-        augmat = myscaler['pt'].transform(augmat)
-    else:        
-        augmat = (augmat-myscaler['output_mean'])/myscaler['output_std']
+        q_scale = myscaler['q_scale']
+        usgsMat_full = np.log(usgs_vals + 1e-4) / q_scale
+    else:
+        #output_mean/output_std are per-node (length num_nodes); select the gaged columns
+        out_mean_g = np.asarray(myscaler['output_mean'])[colIDs]
+        out_std_g = np.asarray(myscaler['output_std'])[colIDs]
+        usgsMat_full = (usgs_vals - out_mean_g) / out_std_g
 
-    #!!!! offset the data
-    usgsMat = augmat[seq:, colIDs]
-
-    colIDs = torch.LongTensor(colIDs)
-    usgsMat = torch.FloatTensor(usgsMat).to(device)
+    #slice out exactly the rows each loader's local `indx` will reference
+    train_usgsMat = torch.FloatTensor(usgsMat_full[noffset:noffset+n_train, :]).to(device)
+    val_usgsMat   = torch.FloatTensor(usgsMat_full[trainLen:trainLen+n_val, :]).to(device)
+    colIDs_t = torch.LongTensor(colIDs)
 
     if uselog:
         model_path='/'.join([save_path, f'{model_prefix}_bestmodel_{basestr}_log.pth'])
@@ -112,38 +174,20 @@ def finetune(args,model,model_prefix,trainLoader,valLoader,A,save_path,usgsDict,
 
     if reTrain:
         model.train()
-
-        """
-        tune_params = [
-                 {'params': model.end_conv_2.parameters(), 'lr': lr},
-            ]
-        """
-        tune_params =  model.parameters()
-        optimizer = torch.optim.Adam(
-                tune_params, 
-                lr=lr, 
-                betas=(0.9, 0.999)
-            )
-
+        tune_params = model.parameters()
+        optimizer = torch.optim.Adam(tune_params, lr=lr, betas=(0.9, 0.999))
         min_val_loss = np.inf
-
-        if args.L1Loss:
-            lossfun = torch.nn.L1Loss()
-        else:
-            lossfun = torch.nn.MSELoss()
-
+        l1 = args.train_params.L1Loss
 
         for epoch in range(nEpoch):
-            epochTrainLoss = trainEpoch(model,optimizer,trainLoader,lossfun,epoch,args,usgsMat,colIDs,**kwargs)
-            epochValLoss   = evalEpoch(model,valLoader,lossfun,args,usgsMat,colIDs,**kwargs)
+            epochTrainLoss = trainEpoch(model,optimizer,trainLoader,epoch,args,train_usgsMat,colIDs_t,l1,**kwargs)
+            epochValLoss   = evalEpoch(model,valLoader,args,val_usgsMat,colIDs_t,l1,**kwargs)
             print("epoch", epoch, ", train loss:", epochTrainLoss, ", val loss:",epochValLoss)
             if epochValLoss < min_val_loss:
-                #only start to record best models after 10 epochs
                 min_val_loss = epochValLoss
                 print ('saving  best model...')
                 torch.save(model.state_dict(), model_path)
-        #save the final model                
-        torch.save(model.state_dict(), model_path_finale)            
+        torch.save(model.state_dict(), model_path_finale)
 
     if not usefinal:
         print ('use saved best model ', model_path)
@@ -154,7 +198,23 @@ def finetune(args,model,model_prefix,trainLoader,valLoader,A,save_path,usgsDict,
 
     return model
 
-def trainEpoch(model,optimizer,loader,criterion,epochno,args,usgsMat,colIDs,**kwargs):
+def getLoss(out,usgsSlice,colIDs,indx,l1=True):
+    """Masked loss: only counts positions where a real USGS observation exists.
+    NaN targets (no observation for that date/gage) are excluded entirely,
+    rather than fine-tuning against fabricated/filled values.
+    """
+    target = usgsSlice[indx,:]
+    pred = out[:,colIDs]
+    mask = ~torch.isnan(target)
+    if mask.sum() == 0:
+        return torch.zeros((), device=pred.device, requires_grad=True)
+    diff = pred[mask] - target[mask]
+    if l1:
+        return diff.abs().mean()
+    else:
+        return (diff**2).mean()
+
+def trainEpoch(model,optimizer,loader,epochno,args,usgsMat,colIDs,l1,**kwargs):
     """Do a single fine tune epoch
     """
     model.train()
@@ -165,40 +225,39 @@ def trainEpoch(model,optimizer,loader,criterion,epochno,args,usgsMat,colIDs,**kw
     pbar = tqdm.tqdm(loader, file=sys.stdout)
     pbar.set_description(f'# Epoch {epochno}')
 
-    for (x,y),indx in pbar: 
-        x=x.to(device)     
-        y=y.to(device)     # (batch, nnode)    
-        model.zero_grad()  # Clear gradients.
-        out = model(x).squeeze() #(batch, nnode)
-        loss = getLoss(out,criterion,usgsMat,colIDs,indx)
+    for (x,y),indx in pbar:
+        x=x.to(device)
+        y=y.to(device)
+        model.zero_grad()
+        out = model(x).squeeze()
+        loss = getLoss(out,usgsMat,colIDs,indx,l1)
 
         l_sum +=loss.item()
         n+=out.shape[0]
-        loss.backward()  # Derive gradients.
+        loss.backward()
         if clip_norm:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), args.clipnorm)
-        optimizer.step()  # Update parameters based on gradients.
+            torch.nn.utils.clip_grad_norm_(model.parameters(), args.train_params.clipnorm)
+        optimizer.step()
         pbar.set_postfix(loss=loss.item())
 
     print ('time elapsed ', time.time()-starttime)
-    return l_sum/n    
+    return l_sum/n
 
-def evalEpoch(model,loader,criterion,args,usgsMat,colIDs, **kwargs):
+def evalEpoch(model,loader,args,usgsMat,colIDs,l1,**kwargs):
     model.eval()
     n=0
     l_sum=0.0
-    
+
     for (x,y),indx in loader:
         x = x.to(device)
         y = y.to(device)
         with torch.no_grad():
-            out = model(x).squeeze()  # Perform a single forward pass.
+            out = model(x).squeeze()
 
-        loss = getLoss(out,criterion,usgsMat,colIDs,indx)
+        loss = getLoss(out,usgsMat,colIDs,indx,l1)
         l_sum +=loss.item()
         n+=out.shape[0]
-    return l_sum/n    
-
+    return l_sum/n
 
 def plotFineTuneResidual(args,nwmMat,finetuneMat,usercmap="rainbow", LOO_gage=None):
     """Visualize node difference due to label propagation
@@ -229,7 +288,7 @@ def plotFineTuneResidual(args,nwmMat,finetuneMat,usercmap="rainbow", LOO_gage=No
         LOO_gage=LOO_gage,
         basinboundshp = os.path.join(rootdir, wobj.shpbasinbound),
         addnwm = args.addnwm,
-        uselog = args.uselog,
+        uselog = args.data.uselog,
         connect_exta_path = args.connect_exta_path,
         nwm_ver = args.nwm_ver,
         vmin = 0.0, vmax=5.0,

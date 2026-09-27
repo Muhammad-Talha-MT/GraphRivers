@@ -1,5 +1,5 @@
 seed: 4121046
-rootdir: '/ocean/projects/ees250003p/mtalha1/GraphRivers'     # paste output of: echo $PROJECT/GraphRivers  (YAML does not expand $PROJECT)
+rootdir: '/home/talham/projects/GraphRivers'     # paste output of: echo $PROJECT/GraphRivers  (YAML does not expand $PROJECT)
 nhdplusdbroot: '/ocean/projects/YOURGROUP/YOURUSER/nhdplusdb'  # unused now -- adjinfo2.1.pkl is pre-built by prep_frenchbroad_from_cache.py
 watershed_name: 'frenchbroad'
 
@@ -48,6 +48,8 @@ train_params:
   retune: False
 
 fine_tune:
+  nepoch: 15
+  learnrate: 1.0e-5
   lambdawt: 1.0
   tune_omega: False
   omega: 1500

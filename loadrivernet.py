@@ -217,6 +217,46 @@ def genMLDataSetsWithForcing(watershed,in_dim,comIDSet,forcingDFDict,allDF,noffs
             else:
                 return (df.to_numpy()-myscaler['output_mean'])/myscaler['output_std']
     
+    #==== DATE ALIGNMENT FIX ====
+    #forcingDFDict and allDF (NWM) may cover different date ranges.
+    #Trim allDF (and forcingDFDict) to their common overlapping date range
+    #so that positional indexing (irow) lines up correctly downstream.
+    _sample_comid = comIDSet[0]
+    _forcing_index = forcingDFDict[_sample_comid].index
+    _common_start = max(allDF.index.min(), _forcing_index.min())
+    _common_end   = min(allDF.index.max(), _forcing_index.max())
+    print(f'Aligning date ranges: allDF was {allDF.index.min()} to {allDF.index.max()} '
+          f'({allDF.shape[0]} rows), forcing was {_forcing_index.min()} to {_forcing_index.max()} '
+          f'({len(_forcing_index)} rows)')
+    print(f'Trimming both to common range: {_common_start} to {_common_end}')
+
+    allDF = allDF.loc[_common_start:_common_end]
+    if allDF_obs is not None:
+        allDF_obs = allDF_obs.loc[_common_start:_common_end]
+
+    #==== NAN FIX ====
+    #some comids have all-NaN streamflow (no NWM coverage). Fill with 0
+    #rather than dropping columns, to keep node count/ordering consistent
+    #with the already-built adjacency matrix.
+    _nan_cols = allDF.columns[allDF.isna().any()].tolist()
+    if len(_nan_cols) > 0:
+        print(f'Filling NaN in {len(_nan_cols)} comid(s) with 0: {_nan_cols}')
+        allDF = allDF.fillna(0)
+        allDF_obs = allDF_obs.fillna(0)
+    #==== END NAN FIX ====
+    _forcing_nan_comids = []
+    for _comid in forcingDFDict:
+        forcingDFDict[_comid] = forcingDFDict[_comid].loc[_common_start:_common_end]
+        if forcingDFDict[_comid].isna().any().any():
+            _forcing_nan_comids.append(_comid)
+            forcingDFDict[_comid] = forcingDFDict[_comid].fillna(0)
+    if len(_forcing_nan_comids) > 0:
+        print(f'Filling NaN forcing data for {len(_forcing_nan_comids)} comid(s): {_forcing_nan_comids[:10]}{"..." if len(_forcing_nan_comids)>10 else ""}')
+
+    print(f'After alignment: allDF has {allDF.shape[0]} rows, '
+          f'forcing has {len(forcingDFDict[_sample_comid])} rows')
+    #==== END DATE ALIGNMENT FIX ====
+
     #allDF_obs contains labeled data at gage locations
     #if it's none, replicate using nwm data
     if allDF_obs is None:
