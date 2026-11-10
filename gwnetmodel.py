@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
-from util_gtnet import Time2Vec
+# Unused Time2Vec import removed.
 
 class nconv(nn.Module):
     def __init__(self):
